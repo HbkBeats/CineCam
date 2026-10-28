@@ -1,0 +1,6 @@
+1. Create a free account at github.com.
+2. New repository > name: CineCam > Private > Create repository.
+3. Click "uploading an existing file".
+4. Open THIS folder, select everything inside it (app, gradle, .github, .gitignore, build.gradle.kts, ...), drag it into the browser page.
+5. Click Commit changes.
+6. Open the Actions tab. When the run shows a green check, open it and download "CineCam-debug-apk" at the bottom.
