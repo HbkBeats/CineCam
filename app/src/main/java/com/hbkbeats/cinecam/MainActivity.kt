@@ -20,6 +20,7 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.CameraFilter
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.video.FallbackStrategy
@@ -53,9 +54,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hbkbeats.cinecam.camera.CameraCapabilities
 import com.hbkbeats.cinecam.camera.LensCatalog
+import com.hbkbeats.cinecam.diagnostics.GyroSyncLogger
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -149,6 +152,14 @@ private fun CameraScreen() {
     var status by remember { mutableStateOf("Ready") }
     var report by remember { mutableStateOf<String?>(null) }
 
+    // Stage 4a: OIS choice (0 = phone default, 1 = on, 2 = off) and the gyro sync test
+    var ois by remember { mutableIntStateOf(0) }
+    var gyroTest by remember { mutableStateOf(false) }
+    var logging by remember { mutableStateOf(false) }
+    val logger = remember { GyroSyncLogger(ctx) }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(Unit) { onDispose { analysisExecutor.shutdown() } }
+
     // Manual controls state
     var showPro by remember { mutableStateOf(false) }
     var manualAe by remember { mutableStateOf(false) }
@@ -184,6 +195,13 @@ private fun CameraScreen() {
         if (wb != CameraMetadata.CONTROL_AWB_MODE_AUTO) {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, wb)
         }
+        if (lens.hasOis && ois != 0) {
+            b.setCaptureRequestOption(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                if (ois == 1) CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
+                else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+            )
+        }
         try {
             // Replaces all earlier options, so switching back to Auto clears them.
             Camera2CameraControl.from(cc).setCaptureRequestOptions(b.build())
@@ -203,7 +221,21 @@ private fun CameraScreen() {
             evStep = state.exposureCompensationStep.toFloat()
         }
     }
-    LaunchedEffect(manualAe, iso, shutterT, manualAf, focusV, wb) { applyManual() }
+    LaunchedEffect(manualAe, iso, shutterT, manualAf, focusV, wb, ois) { applyManual() }
+    // Tapping the preview would trigger autofocus and fight manual focus.
+    LaunchedEffect(manualAf) { controller.isTapToFocusEnabled = !manualAf }
+    // Gyro sync test: preview + video + analysis (no photos) at 1080p.
+    LaunchedEffect(gyroTest) {
+        if (gyroTest) {
+            uhd = false
+            controller.imageAnalysisBackpressureStrategy = ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
+            controller.setImageAnalysisAnalyzer(analysisExecutor, logger)
+            controller.setEnabledUseCases(CameraController.VIDEO_CAPTURE or CameraController.IMAGE_ANALYSIS)
+        } else {
+            controller.setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.VIDEO_CAPTURE)
+            controller.clearImageAnalysisAnalyzer()
+        }
+    }
     LaunchedEffect(evIndex) { controller.cameraControl?.setExposureCompensationIndex(evIndex) }
 
     // Stop an active recording if this screen leaves composition.
@@ -245,12 +277,18 @@ private fun CameraScreen() {
             ctx, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
+        if (gyroTest) logging = logger.start()
         recording = controller.startRecording(opts, AudioConfig.create(audioOk), mainExecutor) { event ->
             when (event) {
                 is VideoRecordEvent.Start ->
                     status = if (audioOk) "Recording (audio ON)" else "Recording (audio OFF: no mic permission)"
                 is VideoRecordEvent.Finalize -> {
-                    status = if (event.hasError()) "Video error code ${event.error}" else "Video saved"
+                    val base = if (event.hasError()) "Video error code ${event.error}" else "Video saved"
+                    status = if (logging) {
+                        logging = false
+                        val oisName = listOf("default", "on", "off")[ois]
+                        "$base. " + logger.stop("lens=${lens.id} ${lens.label},ois=$oisName,res=1080p", oisName)
+                    } else base
                     recording = null
                 }
                 else -> {}
@@ -277,7 +315,7 @@ private fun CameraScreen() {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 280.dp)
+                        .heightIn(max = 320.dp)
                         .background(Color(0xCC000000))
                         .verticalScroll(rememberScrollState())
                         .padding(12.dp)
@@ -331,6 +369,37 @@ private fun CameraScreen() {
                         Slider(value = focusV, onValueChange = { focusV = it }, valueRange = 0f..1f)
                     }
 
+                    Text("Optical stabilization (OIS)", fontSize = 13.sp)
+                    if (lens.hasOis) {
+                        Row(Modifier.horizontalScroll(rememberScrollState())) {
+                            listOf("Default", "On", "Off").forEachIndexed { i, name ->
+                                FilterChip(
+                                    selected = ois == i,
+                                    onClick = { ois = i },
+                                    label = { Text(name) },
+                                    modifier = Modifier.padding(end = 6.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Text("This lens has no OIS.", fontSize = 11.sp)
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Gyro sync test (1080p)", Modifier.weight(1f))
+                        Switch(
+                            checked = gyroTest,
+                            enabled = recording == null,
+                            onCheckedChange = { gyroTest = it }
+                        )
+                    }
+                    if (gyroTest) {
+                        Text(
+                            "Record about 10 s of handheld panning. A log file is saved to Download/CineCam. Photos are off in this mode.",
+                            fontSize = 11.sp
+                        )
+                    }
+
                     Text("White balance", fontSize = 13.sp)
                     val wbOptions = listOf(
                         "Auto" to CameraMetadata.CONTROL_AWB_MODE_AUTO,
@@ -368,6 +437,7 @@ private fun CameraScreen() {
                                 manualAf = false
                                 wb = CameraMetadata.CONTROL_AWB_MODE_AUTO
                                 evIndex = 0
+                                ois = 0
                                 controller.cameraSelector = selectorFor(l.id)
                             }
                         },
@@ -387,7 +457,7 @@ private fun CameraScreen() {
                     contentPadding = tightPadding
                 ) { Text("Info") }
                 OutlinedButton(
-                    enabled = recording == null,
+                    enabled = recording == null && !gyroTest,
                     onClick = { uhd = !uhd },
                     contentPadding = tightPadding
                 ) { Text(if (uhd) "4K" else "1080p") }
@@ -397,7 +467,7 @@ private fun CameraScreen() {
                 ) { Text("Pro") }
                 Button(
                     onClick = { takePhoto() },
-                    enabled = recording == null,
+                    enabled = recording == null && !gyroTest,
                     contentPadding = tightPadding
                 ) { Text("Photo") }
                 Button(

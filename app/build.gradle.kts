@@ -10,10 +10,20 @@ android {
 
     defaultConfig {
         applicationId = "com.hbkbeats.cinecam"
-        minSdk = 28
+        minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0-4a"
+    }
+
+    // Fixed debug key so every GitHub-built APK installs over the previous one.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

@@ -1,22 +1,18 @@
-# CineCam, Stage 3 (compiled by you, not by Claude: expect small fixes)
+# CineCam, Stage 4a
 
-New in Stage 3:
-- Lens picker (Wide / Ultra / Front) by exact Camera2 ID.
-- "Pro" panel: manual ISO and shutter, exposure compensation, manual focus, white balance presets.
-- Bigger "Info" report: gyro, frame timestamp source, high-speed FPS, AWB/AF modes, stream use cases.
-- minSdk is now 28.
+New: OIS switch (Default / On / Off) in the Pro panel for lenses that have OIS (Wide),
+and a Gyro sync test that saves a CSV of gyro and frame timing while you film.
+Also: tapping the preview no longer fights manual focus, and minSdk is 29.
 
-## Build
-1. Unzip this folder next to your old CineCam folder. File > Open the NEW CineCam folder.
-2. Wait for Gradle sync (libraries are cached, so it should be much faster than before).
-3. Pick your Samsung in the device box and press Run.
+## Gyro test, please do this
+1. Lens: Wide. Pro > turn on "Gyro sync test (1080p)".
+2. Pro > OIS > Off. Point at a textured scene (bookshelf, tree, a wall with posters; NOT a blank wall).
+3. Record about 10 seconds: slowly pan left and right a few times, then a few small shakes. Stop.
+4. Repeat with OIS = On. Optionally repeat on Ultra.
+5. Files appear in: Files app > Download > CineCam. Upload the .csv files to Claude.
 
-## Test checklist
-1. Info > Copy > paste the report to Claude (it has new lines we need for stabilization).
-2. Switch Wide / Ultra / Front. Each should show a live preview.
-3. Pro: turn on Manual exposure, drag ISO and Shutter; preview should visibly change.
-4. Pro: Manual focus on Wide; drag the slider while pointing at a near object.
-5. Pro: try white balance presets.
-6. Take a photo and a 4K video in manual mode; check they save and play.
+Photos are disabled while Gyro sync test is on.
 
-Not implemented yet: stabilization, filters/LUTs, RAW capture, 60 fps, discreet mode, vault.
+## Installing
+This build uses a fixed debug key, so later GitHub builds install over this one without uninstalling.
+The FIRST time you install this version, uninstall the old CineCam once (different signing key).

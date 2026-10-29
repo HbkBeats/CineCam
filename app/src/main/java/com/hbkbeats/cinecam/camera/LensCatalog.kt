@@ -11,6 +11,7 @@ data class Lens(
     val id: String,
     val label: String,
     val isFront: Boolean,
+    val hasOis: Boolean,
     val manualSensor: Boolean,
     val isoMin: Int,
     val isoMax: Int,
@@ -45,6 +46,8 @@ object LensCatalog {
                     else -> "Wide"
                 }
 
+                val hasOis = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+                    ?.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
                 val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
                 val manual = caps?.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
                 val iso = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
@@ -57,6 +60,7 @@ object LensCatalog {
                         id = id,
                         label = label,
                         isFront = front,
+                        hasOis = hasOis,
                         manualSensor = manual && iso != null && exp != null,
                         isoMin = iso?.lower ?: 100,
                         isoMax = iso?.upper ?: 800,
