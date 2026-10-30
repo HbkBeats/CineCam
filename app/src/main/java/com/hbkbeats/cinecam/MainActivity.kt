@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -55,13 +56,19 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hbkbeats.cinecam.camera.CameraCapabilities
 import com.hbkbeats.cinecam.camera.LensCatalog
 import com.hbkbeats.cinecam.diagnostics.GyroSyncLogger
+import com.hbkbeats.cinecam.stabilize.GyroData
+import com.hbkbeats.cinecam.stabilize.StabMode
+import com.hbkbeats.cinecam.stabilize.Stabilizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -159,6 +166,38 @@ private fun CameraScreen() {
     val logger = remember { GyroSyncLogger(ctx) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     DisposableEffect(Unit) { onDispose { analysisExecutor.shutdown() } }
+
+    // Stage 4b: stabilize the last clip after recording
+    var recordGyro by remember { mutableStateOf(true) }
+    var lastVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var lastGyro by remember { mutableStateOf<GyroData?>(null) }
+    var stabilizing by remember { mutableStateOf(false) }
+    val uiScope = rememberCoroutineScope()
+
+    fun startStabilize(mode: StabMode) {
+        val uri = lastVideoUri ?: return
+        val gyro = lastGyro ?: return
+        if (stabilizing) return
+        stabilizing = true
+        uiScope.launch {
+            try {
+                status = "Stabilizing: analysing clip..."
+                val plan = withContext(Dispatchers.Default) {
+                    Stabilizer.plan(ctx, uri, gyro, mode) { msg -> status = msg }
+                }
+                status = "Stabilizing: rendering 0%"
+                val file = Stabilizer.export(ctx, uri, plan) { pct -> status = "Stabilizing: rendering $pct%" }
+                status = "Saving..."
+                val ok = withContext(Dispatchers.IO) { Stabilizer.saveToGallery(ctx, file, mode) }
+                status = if (ok) "Stabilized video saved (${mode.label}): ${plan.summary}"
+                else "Could not save the stabilized video"
+            } catch (e: Exception) {
+                status = "Stabilize failed: ${e.message}"
+            } finally {
+                stabilizing = false
+            }
+        }
+    }
 
     // Manual controls state
     var showPro by remember { mutableStateOf(false) }
@@ -277,17 +316,26 @@ private fun CameraScreen() {
             ctx, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (gyroTest) logging = logger.start()
+        if (gyroTest || recordGyro) logging = logger.start(csv = gyroTest)
         recording = controller.startRecording(opts, AudioConfig.create(audioOk), mainExecutor) { event ->
             when (event) {
                 is VideoRecordEvent.Start ->
                     status = if (audioOk) "Recording (audio ON)" else "Recording (audio OFF: no mic permission)"
                 is VideoRecordEvent.Finalize -> {
                     val base = if (event.hasError()) "Video error code ${event.error}" else "Video saved"
+                    lastVideoUri = if (event.hasError()) null else event.outputResults.outputUri
+                    lastGyro = null
                     status = if (logging) {
                         logging = false
-                        val oisName = listOf("default", "on", "off")[ois]
-                        "$base. " + logger.stop("lens=${lens.id} ${lens.label},ois=$oisName,res=1080p", oisName)
+                        if (gyroTest) {
+                            val oisName = listOf("default", "on", "off")[ois]
+                            val msg = logger.stop("lens=${lens.id} ${lens.label},ois=$oisName,res=1080p", oisName)
+                            lastGyro = logger.snapshot()
+                            "$base. $msg"
+                        } else {
+                            lastGyro = logger.stopQuiet()
+                            "$base. Gyro recorded. Tap Stabilize to smooth this clip."
+                        }
                     } else base
                     recording = null
                 }
@@ -386,6 +434,15 @@ private fun CameraScreen() {
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Record gyro (needed to stabilize)", Modifier.weight(1f))
+                        Switch(
+                            checked = recordGyro,
+                            enabled = recording == null,
+                            onCheckedChange = { recordGyro = it }
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Gyro sync test (1080p)", Modifier.weight(1f))
                         Switch(
                             checked = gyroTest,
@@ -417,6 +474,25 @@ private fun CameraScreen() {
                                 modifier = Modifier.padding(end = 6.dp)
                             )
                         }
+                    }
+                }
+            }
+
+            // Stabilize the last clip
+            if (lastVideoUri != null && lastGyro != null && recording == null) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Stabilize last clip:", fontSize = 12.sp, modifier = Modifier.padding(end = 6.dp))
+                    StabMode.values().forEach { mode ->
+                        OutlinedButton(
+                            onClick = { startStabilize(mode) },
+                            enabled = !stabilizing,
+                            contentPadding = tightPadding,
+                            modifier = Modifier.padding(end = 6.dp)
+                        ) { Text(mode.label) }
                     }
                 }
             }
@@ -472,6 +548,7 @@ private fun CameraScreen() {
                 ) { Text("Photo") }
                 Button(
                     onClick = { toggleRecording() },
+                    enabled = !stabilizing,
                     contentPadding = tightPadding,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (recording != null) Color.Red else MaterialTheme.colorScheme.primary

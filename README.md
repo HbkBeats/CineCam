@@ -1,18 +1,13 @@
-# CineCam, Stage 4a
+# CineCam, Stage 4b: stabilize after recording
 
-New: OIS switch (Default / On / Off) in the Pro panel for lenses that have OIS (Wide),
-and a Gyro sync test that saves a CSV of gyro and frame timing while you film.
-Also: tapping the preview no longer fights manual focus, and minSdk is 29.
+How it works
+1. Record normally (Pro > "Record gyro" is ON by default). The phone's gyroscope is recorded alongside the video.
+2. When the clip finishes, "Stabilize last clip" appears: Standard / High / Action.
+3. The app measures real picture motion in ~50 spots of the clip, lines it up with the gyro (finds the time offset
+   and gains by itself), smooths the camera path, then re-renders the video with each frame shifted and zoomed.
+4. Result: Movies/CineCam/CineCam_stab_<mode>_<time>.mp4. The original is untouched.
 
-## Gyro test, please do this
-1. Lens: Wide. Pro > turn on "Gyro sync test (1080p)".
-2. Pro > OIS > Off. Point at a textured scene (bookshelf, tree, a wall with posters; NOT a blank wall).
-3. Record about 10 seconds: slowly pan left and right a few times, then a few small shakes. Stop.
-4. Repeat with OIS = On. Optionally repeat on Ultra.
-5. Files appear in: Files app > Download > CineCam. Upload the .csv files to Claude.
+Modes (first guesses): Standard = light smoothing, ~5% crop. High = ~9% crop. Action = ~15% crop, strongest smoothing.
 
-Photos are disabled while Gyro sync test is on.
-
-## Installing
-This build uses a fixed debug key, so later GitHub builds install over this one without uninstalling.
-The FIRST time you install this version, uninstall the old CineCam once (different signing key).
+First test: Wide lens, 1080p, record 10-15 s handheld while walking slowly, pointing at a textured scene.
+Stabilize only works on the last clip recorded in this session. No roll/horizon correction yet.

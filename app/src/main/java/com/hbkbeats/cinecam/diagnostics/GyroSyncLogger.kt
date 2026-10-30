@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import com.hbkbeats.cinecam.stabilize.GyroData
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +33,12 @@ class GyroSyncLogger(private val context: Context) : SensorEventListener, ImageA
     private val frameRows = StringBuilder()
     private var gyroCount = 0
     private var frameCount = 0
+    private var csvOn = true
+    private var gn = 0
+    private var gt = LongArray(8192)
+    private var gx = FloatArray(8192)
+    private var gy = FloatArray(8192)
+    private var gz = FloatArray(8192)
     private var prev: IntArray? = null
     private var prevTs = 0L
     @Volatile private var imgW = 0
@@ -39,7 +46,9 @@ class GyroSyncLogger(private val context: Context) : SensorEventListener, ImageA
     @Volatile private var imgRotation = 0
 
     /** Returns false if the phone has no gyroscope or it could not be started. */
-    fun start(): Boolean {
+    fun start(csv: Boolean = true): Boolean {
+        csvOn = csv
+        gn = 0
         synchronized(frameRows) {
             frameRows.setLength(0)
             frameCount = 0
@@ -92,13 +101,34 @@ class GyroSyncLogger(private val context: Context) : SensorEventListener, ImageA
         }
     }
 
+    /** Copy of the gyro samples recorded so far. */
+    fun snapshot(): GyroData = GyroData(gt.copyOf(gn), gx.copyOf(gn), gy.copyOf(gn), gz.copyOf(gn))
+
+    /** Stops gyro logging without writing a CSV and returns the samples. */
+    fun stopQuiet(): GyroData {
+        logging = false
+        sm.unregisterListener(this)
+        return snapshot()
+    }
+
     // Gyroscope samples (runs on the main thread)
     override fun onSensorChanged(event: SensorEvent) {
         if (!logging) return
-        gyroRows.append("G,").append(event.timestamp).append(',')
-            .append(event.values[0]).append(',')
-            .append(event.values[1]).append(',')
-            .append(event.values[2]).append('\n')
+        if (gn == gt.size) {
+            val cap = gt.size * 2
+            gt = gt.copyOf(cap); gx = gx.copyOf(cap); gy = gy.copyOf(cap); gz = gz.copyOf(cap)
+        }
+        gt[gn] = event.timestamp
+        gx[gn] = event.values[0]
+        gy[gn] = event.values[1]
+        gz[gn] = event.values[2]
+        gn++
+        if (csvOn) {
+            gyroRows.append("G,").append(event.timestamp).append(',')
+                .append(event.values[0]).append(',')
+                .append(event.values[1]).append(',')
+                .append(event.values[2]).append('\n')
+        }
         gyroCount++
     }
 

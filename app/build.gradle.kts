@@ -12,8 +12,8 @@ android {
         applicationId = "com.hbkbeats.cinecam"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0-4a"
+        versionCode = 5
+        versionName = "0.5.0-4b"
     }
 
     // Fixed debug key so every GitHub-built APK installs over the previous one.
@@ -45,6 +45,11 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
     implementation("androidx.camera:camera-video:$camerax")
+
+    val media3 = "1.5.1"
+    implementation("androidx.media3:media3-common:$media3")
+    implementation("androidx.media3:media3-effect:$media3")
+    implementation("androidx.media3:media3-transformer:$media3")
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
