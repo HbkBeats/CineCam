@@ -1,13 +1,15 @@
-# CineCam, Stage 4b: stabilize after recording
+# CineCam, Stage 4c
 
-How it works
-1. Record normally (Pro > "Record gyro" is ON by default). The phone's gyroscope is recorded alongside the video.
-2. When the clip finishes, "Stabilize last clip" appears: Standard / High / Action.
-3. The app measures real picture motion in ~50 spots of the clip, lines it up with the gyro (finds the time offset
-   and gains by itself), smooths the camera path, then re-renders the video with each frame shifted and zoomed.
-4. Result: Movies/CineCam/CineCam_stab_<mode>_<time>.mp4. The original is untouched.
+Changes from 4b
+- More headroom: Standard ~7% crop, High ~13%, Action ~20%. Gentler limiter for big corrections.
+- Only the slower part of the shake is corrected (the phone's lens stabilizer already handles very fast shake).
+- Stabilized export is clipped to the original length (tries to remove the frozen tail).
+- After every export the app checks the result and prints it in the status line:
+  output vs input length, and where the output starts inside the original.
+- New "Test" button: re-exports with NO correction, and also reports any frozen tail.
+  Use it to find out if the start/end timing bug comes from the export library.
 
-Modes (first guesses): Standard = light smoothing, ~5% crop. High = ~9% crop. Action = ~15% crop, strongest smoothing.
-
-First test: Wide lens, 1080p, record 10-15 s handheld while walking slowly, pointing at a textured scene.
-Stabilize only works on the last clip recorded in this session. No roll/horizon correction yet.
+Test plan
+1. Record a fresh 10-15 s clip (Wide, 1080p), walking slowly, textured scene.
+2. Tap Test. When done, screenshot the status line (it starts with "Saved (Test)").
+3. Tap High. Screenshot the status line again. Watch the saved High clip.

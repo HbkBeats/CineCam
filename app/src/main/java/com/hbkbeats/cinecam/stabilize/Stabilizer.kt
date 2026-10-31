@@ -43,9 +43,11 @@ import kotlin.math.tanh
 
 /** Smoothing strength and the zoom (crop) that buys room to shift the picture. First guesses, to be tuned. */
 enum class StabMode(val label: String, val sigmaSec: Double, val zoom: Float) {
-    STANDARD("Standard", 0.20, 1.05f),
-    HIGH("High", 0.45, 1.10f),
-    ACTION("Action", 0.90, 1.18f)
+    STANDARD("Standard", 0.20, 1.08f),
+    HIGH("High", 0.45, 1.15f),
+    ACTION("Action", 0.90, 1.25f),
+    /** Re-exports with no correction, to check the export itself for timing problems. */
+    TEST("Test", 0.20, 1.001f)
 }
 
 /** Per-frame picture shifts (fractions of the frame) ready to hand to the video renderer. */
@@ -55,7 +57,8 @@ class Plan(
     private val cx: FloatArray,
     private val cy: FloatArray,
     val bitrate: Int,
-    val summary: String
+    val summary: String,
+    val inputDurationMs: Long
 ) {
     fun matrixAt(presentationTimeUs: Long): Matrix {
         val t = presentationTimeUs / 1_000_000.0
@@ -77,6 +80,7 @@ object Stabilizer {
     private const val SIZE = 192
     private const val RADIUS = 8
     private const val STEP = 0.01 // seconds between path samples
+    private const val FAST_SIGMA = 0.03 // smoothing (about 4 Hz) used to ignore shake the lens stabilizer already removed
 
     private class Fit(val rss: Double, val ax: DoubleArray, val ay: DoubleArray)
 
@@ -111,6 +115,11 @@ object Stabilizer {
             val period = durSec / frameCount
             val bitrate = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
                 ?.toIntOrNull() ?: 20_000_000).coerceIn(8_000_000, 60_000_000)
+
+            if (mode == StabMode.TEST) {
+                val m0 = floor(durSec / STEP).toInt() + 2
+                return Plan(mode.zoom, STEP, FloatArray(m0), FloatArray(m0), bitrate, "export test, no correction", durMs)
+            }
 
             // Measure real picture motion at ~50 spots (two frames apart)
             val gap = 2
@@ -190,6 +199,9 @@ object Stabilizer {
             }
             val smx = smooth(px, mode.sigmaSec, STEP)
             val smy = smooth(py, mode.sigmaSec, STEP)
+            // The phone's lens stabilizer already removes very fast shake, so only correct the slower part.
+            val pxf = smooth(px, FAST_SIGMA, STEP)
+            val pyf = smooth(py, FAST_SIGMA, STEP)
 
             // Shift the picture from where it is (path) to where the smooth path says; limited by the zoom margin
             val limit = (mode.zoom - 1.0) / 2.0 * 0.9
@@ -197,28 +209,37 @@ object Stabilizer {
             val cy = FloatArray(m)
             var peak = 0.0
             for (j in 0 until m) {
-                val ex = smx[j] - px[j]
-                val ey = smy[j] - py[j]
+                val ex = smx[j] - pxf[j]
+                val ey = smy[j] - pyf[j]
                 peak = max(peak, max(abs(ex), abs(ey)))
-                cx[j] = (limit * tanh(ex / limit)).toFloat()
-                cy[j] = (limit * tanh(ey / limit)).toFloat()
+                cx[j] = softLimit(ex, limit).toFloat()
+                cy[j] = softLimit(ey, limit).toFloat()
             }
             val summary = "gyro match ${(r2 * 100).roundToInt()}%, offset ${(bestT0 * 1000).roundToInt()} ms, " +
                 "peak correction ${"%.1f".format(peak * 100)}% of frame, crop ${((1.0 - 1.0 / mode.zoom) * 100).roundToInt()}%"
-            return Plan(mode.zoom, STEP, cx, cy, bitrate, summary)
+            return Plan(mode.zoom, STEP, cx, cy, bitrate, summary, durMs)
         } finally {
             mmr.release()
         }
     }
 
     /** Step 2 (must be called on the main thread): renders the stabilized video to a cache file. */
-    suspend fun export(context: Context, src: Uri, plan: Plan, onProgress: (Int) -> Unit): File =
+    suspend fun export(context: Context, src: Uri, plan: Plan, clip: Boolean, onProgress: (Int) -> Unit): File =
         suspendCancellableCoroutine { cont ->
             val outFile = File(context.cacheDir, "stab_${System.currentTimeMillis()}.mp4")
             val effect = object : MatrixTransformation {
                 override fun getMatrix(presentationTimeUs: Long): Matrix = plan.matrixAt(presentationTimeUs)
             }
-            val edited = EditedMediaItem.Builder(MediaItem.fromUri(src))
+            val item = if (clip) {
+                MediaItem.Builder().setUri(src)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder().setEndPositionMs(plan.inputDurationMs).build()
+                    )
+                    .build()
+            } else {
+                MediaItem.fromUri(src)
+            }
+            val edited = EditedMediaItem.Builder(item)
                 .setEffects(Effects(emptyList<AudioProcessor>(), listOf<Effect>(effect)))
                 .build()
             val encoderFactory = DefaultEncoderFactory.Builder(context)
@@ -282,7 +303,113 @@ object Stabilizer {
         }
     }
 
+    /** Compares the rendered file with the original and describes any timing problem. */
+    fun check(context: Context, src: Uri, out: File, plan: Plan, mode: StabMode): String {
+        val mi = MediaMetadataRetriever()
+        val mo = MediaMetadataRetriever()
+        return try {
+            mi.setDataSource(context, src)
+            mo.setDataSource(out.absolutePath)
+            val inMs = plan.inputDurationMs
+            val inFrames = mi.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull() ?: 0L
+            val outMs = mo.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            val outFrames = mo.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull() ?: 0L
+            val inPeriod = if (inFrames > 0) inMs / 1000.0 / inFrames else 1.0 / 30
+            val outPeriod = if (outFrames > 0) outMs / 1000.0 / outFrames else 1.0 / 30
+            val sb = StringBuilder()
+            sb.append("Check: output ${"%.2f".format(outMs / 1000.0)} s, $outFrames frames; input ${"%.2f".format(inMs / 1000.0)} s, $inFrames frames")
+            val first = lumaNorm(mo, 0.0, 1f)
+            if (first != null) {
+                var bestK = -1
+                var bestE = Double.MAX_VALUE
+                for (k in 0..60) {
+                    val f = lumaNorm(mi, k * inPeriod, plan.zoom) ?: continue
+                    val e = meanSq(first, f)
+                    if (e < bestE) { bestE = e; bestK = k }
+                }
+                if (bestK >= 0 && bestE < 0.5) {
+                    sb.append("; output starts at input ${"%.2f".format(bestK * inPeriod)} s")
+                } else {
+                    sb.append("; start match unclear")
+                }
+            }
+            if (mode == StabMode.TEST && outFrames > 20) {
+                val lastT = (outFrames - 1) * outPeriod
+                val last = lumaNorm(mo, lastT, 1f)
+                if (last != null) {
+                    var frozen = 0
+                    for (j in 1..100) {
+                        val t = lastT - j * outPeriod
+                        if (t < 0) break
+                        val f = lumaNorm(mo, t, 1f) ?: break
+                        if (meanSq(last, f) < 0.03) frozen = j else break
+                    }
+                    sb.append("; frozen tail ${"%.2f".format(frozen * outPeriod)} s")
+                }
+            }
+            sb.toString()
+        } catch (e: Exception) {
+            "Check failed: ${e.message}"
+        } finally {
+            mi.release()
+            mo.release()
+        }
+    }
+
     // ---------- helpers ----------
+
+    /** Gentle limiter: passes small corrections untouched, then eases toward the limit. */
+    private fun softLimit(x: Double, limit: Double): Double {
+        val knee = 0.7 * limit
+        val a = abs(x)
+        if (a <= knee) return x
+        val room = limit - knee
+        val y = knee + room * tanh((a - knee) / room)
+        return if (x < 0) -y else y
+    }
+
+    private fun meanSq(a: FloatArray, b: FloatArray): Double {
+        var s = 0.0
+        for (i in a.indices) {
+            val d = (a[i] - b[i]).toDouble()
+            s += d * d
+        }
+        return s / a.size
+    }
+
+    /** 96x96 brightness picture with zero mean and unit spread, optionally center-cropped by zoom. */
+    private fun lumaNorm(mmr: MediaMetadataRetriever, tSec: Double, zoom: Float): FloatArray? {
+        val raw = mmr.getScaledFrameAtTime(
+            (tSec * 1e6).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, 96, 96
+        ) ?: return null
+        var bmp = raw
+        if (zoom > 1.0005f) {
+            val cw = max(8, (raw.width / zoom).toInt())
+            val ch = max(8, (raw.height / zoom).toInt())
+            bmp = Bitmap.createBitmap(raw, (raw.width - cw) / 2, (raw.height - ch) / 2, cw, ch)
+        }
+        if (bmp.width != 96 || bmp.height != 96) bmp = Bitmap.createScaledBitmap(bmp, 96, 96, true)
+        val px = IntArray(96 * 96)
+        bmp.getPixels(px, 0, 96, 0, 0, 96, 96)
+        val out = FloatArray(px.size)
+        var mean = 0.0
+        for (i in px.indices) {
+            val c = px[i]
+            val l = (((c shr 16) and 0xFF) * 77 + ((c shr 8) and 0xFF) * 150 + (c and 0xFF) * 29) shr 8
+            out[i] = l.toFloat()
+            mean += l
+        }
+        mean /= px.size
+        var v = 0.0
+        for (i in out.indices) {
+            out[i] = out[i] - mean.toFloat()
+            v += out[i] * out[i]
+        }
+        val sd = sqrt(v / out.size)
+        if (sd < 1.0) return null
+        for (i in out.indices) out[i] = (out[i] / sd).toFloat()
+        return out
+    }
 
     private fun lumaFrame(mmr: MediaMetadataRetriever, tSec: Double): IntArray? {
         var bmp = mmr.getScaledFrameAtTime(

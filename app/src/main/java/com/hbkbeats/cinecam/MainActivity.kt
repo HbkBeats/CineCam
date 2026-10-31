@@ -186,11 +186,14 @@ private fun CameraScreen() {
                     Stabilizer.plan(ctx, uri, gyro, mode) { msg -> status = msg }
                 }
                 status = "Stabilizing: rendering 0%"
-                val file = Stabilizer.export(ctx, uri, plan) { pct -> status = "Stabilizing: rendering $pct%" }
-                status = "Saving..."
+                val file = Stabilizer.export(ctx, uri, plan, mode != StabMode.TEST) { pct ->
+                    status = "Stabilizing: rendering $pct%"
+                }
+                status = "Checking the result..."
+                val check = withContext(Dispatchers.Default) { Stabilizer.check(ctx, uri, file, plan, mode) }
                 val ok = withContext(Dispatchers.IO) { Stabilizer.saveToGallery(ctx, file, mode) }
-                status = if (ok) "Stabilized video saved (${mode.label}): ${plan.summary}"
-                else "Could not save the stabilized video"
+                status = if (ok) "Saved (${mode.label}): ${plan.summary}. $check"
+                else "Could not save the video. $check"
             } catch (e: Exception) {
                 status = "Stabilize failed: ${e.message}"
             } finally {
