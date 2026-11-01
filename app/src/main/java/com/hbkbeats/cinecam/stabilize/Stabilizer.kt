@@ -197,26 +197,64 @@ object Stabilizer {
                 px[j] = sx / SIZE
                 py[j] = sy / SIZE
             }
-            val smx = smooth(px, mode.sigmaSec, STEP)
-            val smy = smooth(py, mode.sigmaSec, STEP)
             // The phone's lens stabilizer already removes very fast shake, so only correct the slower part.
             val pxf = smooth(px, FAST_SIGMA, STEP)
             val pyf = smooth(py, FAST_SIGMA, STEP)
 
-            // Shift the picture from where it is (path) to where the smooth path says; limited by the zoom margin
+            // Adaptive smoothing: use the strongest smoothing whose correction still fits inside the zoom margin,
+            // and ease toward lighter smoothing where the shake is bigger than the margin.
             val limit = (mode.zoom - 1.0) / 2.0 * 0.9
+            val fits = limit * 0.8
+            val scales = doubleArrayOf(1.0, 0.6, 0.35, 0.2, 0.1)
+            val nl = scales.size // index nl means "no correction"
+            val levelX = Array(nl + 1) { k -> if (k < nl) smooth(px, max(0.012, mode.sigmaSec * scales[k]), STEP) else pxf }
+            val levelY = Array(nl + 1) { k -> if (k < nl) smooth(py, max(0.012, mode.sigmaSec * scales[k]), STEP) else pyf }
+            val want = DoubleArray(m)
+            for (j in 0 until m) {
+                var k = 0
+                while (k < nl) {
+                    val ex = levelX[k][j] - pxf[j]
+                    val ey = levelY[k][j] - pyf[j]
+                    if (max(abs(ex), abs(ey)) <= fits) break
+                    k++
+                }
+                want[j] = k.toDouble()
+            }
+            // Be cautious: widen every "lighter smoothing" request by about 0.25 s, then ease the changes.
+            val widen = 25
+            val cautious = DoubleArray(m) { j ->
+                var v = 0.0
+                for (i in max(0, j - widen)..min(m - 1, j + widen)) v = max(v, want[i])
+                v
+            }
+            val eased = smoothClamped(cautious, 0.15, STEP)
+            val smoothX = DoubleArray(m)
+            val smoothY = DoubleArray(m)
+            var fullCount = 0
+            for (j in 0 until m) {
+                val f = eased[j].coerceIn(0.0, nl.toDouble())
+                if (f < 0.5) fullCount++
+                val k0 = floor(f).toInt()
+                val k1 = min(k0 + 1, nl)
+                val t = f - k0
+                smoothX[j] = levelX[k0][j] * (1 - t) + levelX[k1][j] * t
+                smoothY[j] = levelY[k0][j] * (1 - t) + levelY[k1][j] * t
+            }
+
+            // Shift the picture from where it is (path) to where the smooth path says
             val cx = FloatArray(m)
             val cy = FloatArray(m)
             var peak = 0.0
             for (j in 0 until m) {
-                val ex = smx[j] - pxf[j]
-                val ey = smy[j] - pyf[j]
+                val ex = smoothX[j] - pxf[j]
+                val ey = smoothY[j] - pyf[j]
                 peak = max(peak, max(abs(ex), abs(ey)))
                 cx[j] = softLimit(ex, limit).toFloat()
                 cy[j] = softLimit(ey, limit).toFloat()
             }
             val summary = "gyro match ${(r2 * 100).roundToInt()}%, offset ${(bestT0 * 1000).roundToInt()} ms, " +
-                "peak correction ${"%.1f".format(peak * 100)}% of frame, crop ${((1.0 - 1.0 / mode.zoom) * 100).roundToInt()}%"
+                "peak correction ${"%.1f".format(peak * 100)}% of frame, crop ${((1.0 - 1.0 / mode.zoom) * 100).roundToInt()}%, " +
+                "full smoothing ${fullCount * 100 / m}% of the time"
             return Plan(mode.zoom, STEP, cx, cy, bitrate, summary, durMs)
         } finally {
             mmr.release()
@@ -495,6 +533,23 @@ object Stabilizer {
             }
         }
         return DoubleArray(3) { m[it][3] / m[it][it] }
+    }
+
+    /** Gaussian smoothing with the end values held (for signals that are not paths, such as a strength index). */
+    private fun smoothClamped(p: DoubleArray, sigma: Double, step: Double): DoubleArray {
+        val half = ceil(3.0 * sigma / step).toInt()
+        val w = DoubleArray(2 * half + 1) { exp(-0.5 * ((it - half) * step / sigma).pow(2)) }
+        val last = p.size - 1
+        return DoubleArray(p.size) { i ->
+            var acc = 0.0
+            var ws = 0.0
+            for (k in -half..half) {
+                val idx = (i + k).coerceIn(0, last)
+                acc += w[k + half] * p[idx]
+                ws += w[k + half]
+            }
+            acc / ws
+        }
     }
 
     /** Zero-lag Gaussian smoothing; ends are mirrored point-wise so straight drifts are not bent. */

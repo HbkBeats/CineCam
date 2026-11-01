@@ -1,15 +1,9 @@
-# CineCam, Stage 4c
+# CineCam, Stage 4d
 
-Changes from 4b
-- More headroom: Standard ~7% crop, High ~13%, Action ~20%. Gentler limiter for big corrections.
-- Only the slower part of the shake is corrected (the phone's lens stabilizer already handles very fast shake).
-- Stabilized export is clipped to the original length (tries to remove the frozen tail).
-- After every export the app checks the result and prints it in the status line:
-  output vs input length, and where the output starts inside the original.
-- New "Test" button: re-exports with NO correction, and also reports any frozen tail.
-  Use it to find out if the start/end timing bug comes from the export library.
+New: adaptive smoothing. The stabilizer uses the strongest smoothing that still fits inside the crop margin,
+and eases toward lighter smoothing where the shake is bigger than the margin (instead of hitting a hard wall).
+The status line now also says how much of the clip got full smoothing.
 
-Test plan
-1. Record a fresh 10-15 s clip (Wide, 1080p), walking slowly, textured scene.
-2. Tap Test. When done, screenshot the status line (it starts with "Saved (Test)").
-3. Tap High. Screenshot the status line again. Watch the saved High clip.
+Tests
+1. Re-run High on a wild handheld 1080p clip. Screenshot the status line, send original + stabilized files.
+2. Record a short 4K clip (tap the 1080p button so it says 4K), tap Test, screenshot the status line.

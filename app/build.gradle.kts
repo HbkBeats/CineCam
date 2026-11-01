@@ -12,8 +12,8 @@ android {
         applicationId = "com.hbkbeats.cinecam"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6.0-4c"
+        versionCode = 7
+        versionName = "0.7.0-4d"
     }
 
     // Fixed debug key so every GitHub-built APK installs over the previous one.
